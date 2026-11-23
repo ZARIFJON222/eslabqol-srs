@@ -1,0 +1,10 @@
+{
+  "rules": {
+    "eslabqol_workspaces": {
+      "$syncId": {
+        ".read": true,
+        ".write": true
+      }
+    }
+  }
+}

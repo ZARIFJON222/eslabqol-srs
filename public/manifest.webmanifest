@@ -1,0 +1,17 @@
+{
+  "name": "EslabQol — WordCard SRS",
+  "short_name": "EslabQol",
+  "description": "Ingliz tili so‘zlarini oraliqli takrorlash (SRS) va yangi chalg‘ituvchi variantlar orqali uzoq muddatli xotiraga muhrlash.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#060919",
+  "theme_color": "#6366f1",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
