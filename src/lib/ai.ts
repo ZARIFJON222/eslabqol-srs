@@ -1,7 +1,14 @@
 import type { DailyStats, WordCard } from '../types';
 
 const GEMINI_KEY_STORAGE = 'eslabqol_gemini_key_v1';
-const GEMINI_MODEL = 'gemini-3.8-flash';
+const GEMINI_MODELS = [
+  'gemini-flash-latest',
+  'gemini-3.7-flash',
+  'gemini-3.6-flash',
+  'gemini-3.5-flash',
+  'gemini-3.8-flash',
+  'gemini-2.5-flash-lite',
+];
 
 export function getGeminiApiKey(): string | null {
   const envKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
@@ -32,10 +39,6 @@ async function callGemini(prompt: string, jsonMode = false): Promise<string> {
     throw new Error('Gemini API kaliti kiritilmagan.');
   }
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(
-    apiKey
-  )}`;
-
   const body: Record<string, unknown> = {
     contents: [{ parts: [{ text: prompt }] }],
   };
@@ -44,7 +47,10 @@ async function callGemini(prompt: string, jsonMode = false): Promise<string> {
   }
 
   let lastErr: Error | null = null;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (const model of GEMINI_MODELS) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(
+      apiKey
+    )}`;
     try {
       const res = await fetch(url, {
         method: 'POST',
@@ -52,8 +58,8 @@ async function callGemini(prompt: string, jsonMode = false): Promise<string> {
         body: JSON.stringify(body),
       });
 
-      if (res.status === 503 && attempt === 0) {
-        await new Promise((r) => setTimeout(r, 900));
+      if (res.status === 503 || res.status === 429 || res.status === 404) {
+        lastErr = new Error(`Model ${model} band (${res.status})`);
         continue;
       }
 
