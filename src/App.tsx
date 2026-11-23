@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import type { DailyStats, WordCard } from './types';
 import { ESSENTIAL_3_UNIT_1_SAMPLE } from './data/distractorPool';
-import { applyReviewResult, getDueCards } from './lib/srs';
+import { getDueCards } from './lib/srs';
 import {
   getEnglishVoices,
   getSelectedVoiceUri,
@@ -227,50 +227,72 @@ export function App() {
   const handleAnswer = (
     cardId: string,
     isCorrect: boolean,
-    chosenDistractors: string[],
-    updateSchedule: boolean
+    chosenDistractors: string[]
   ) => {
-    setCards((prev) => {
-      const now = Date.now();
-      const target = prev.find((c) => c.id === cardId);
-      if (!target) return prev;
-
-      const updatedTarget = applyReviewResult(
-        target,
-        isCorrect,
-        chosenDistractors,
-        now,
-        updateSchedule
-      );
-
-      // Synchronize all cards in the target's new stage to ONE shared batch timer
-      // so words added or reviewed minutes apart never trigger separate timers 5 minutes apart!
-      const targetStage = updatedTarget.stage;
-      const unifiedNextReviewAt = updatedTarget.nextReviewAt;
-
-      return prev.map((c) => {
-        if (c.id === cardId) return updatedTarget;
-        if (updateSchedule && c.stage === targetStage && c.nextReviewAt > now) {
-          return { ...c, nextReviewAt: unifiedNextReviewAt };
-        }
-        return c;
-      });
-    });
+    // Record distractors & stats during the quiz; the whole Unit levels up together when the Unit quiz finishes!
+    setCards((prev) =>
+      prev.map((c) => {
+        if (c.id !== cardId) return c;
+        const mergedRecent = [
+          ...chosenDistractors,
+          ...(c.recentDistractors || []),
+        ].slice(0, 6);
+        return {
+          ...c,
+          lastReviewedAt: Date.now(),
+          correctCount: isCorrect ? c.correctCount + 1 : c.correctCount,
+          wrongCount: isCorrect ? c.wrongCount : c.wrongCount + 1,
+          recentDistractors: mergedRecent,
+        };
+      })
+    );
     setStats((prev) => recordReviewStat(prev, isCorrect));
+  };
+
+  const handleCompleteUnitLevel = (unitName: string, currentStage: number) => {
+    const now = Date.now();
+    const nextStage = Math.min(currentStage + 1, 7);
+    const intervals = [
+      1 * 3600 * 1000,
+      2 * 3600 * 1000,
+      5 * 3600 * 1000,
+      24 * 3600 * 1000,
+      3 * 24 * 3600 * 1000,
+      7 * 24 * 3600 * 1000,
+      14 * 24 * 3600 * 1000,
+      30 * 24 * 3600 * 1000,
+    ];
+    const nextDue = now + intervals[nextStage];
+
+    setCards((prev) =>
+      prev.map((c) =>
+        c.deck === unitName
+          ? {
+              ...c,
+              stage: nextStage,
+              nextReviewAt: nextDue,
+              lastReviewedAt: now,
+            }
+          : c
+      )
+    );
   };
 
   const handleAddCards = (newCards: WordCard[]) => {
     setCards((prev) => {
-      // If there are already words waiting in Stage 0, sync new words to the same Stage 0 timer
-      // so adding units 5 minutes apart groups them into the exact same review batch!
-      const existingStage0 = prev.find((c) => c.stage === 0);
-      const sharedStage0Time = existingStage0
-        ? existingStage0.nextReviewAt
-        : newCards[0]?.nextReviewAt ?? Date.now();
+      if (newCards.length === 0) return prev;
+      const targetDeck = newCards[0].deck;
+      const existingInDeck = prev.find((c) => c.deck === targetDeck);
+      const now = Date.now();
+      const deckStage = existingInDeck ? existingInDeck.stage : 0;
+      const deckNextReview = existingInDeck
+        ? existingInDeck.nextReviewAt
+        : now + 1 * 3600 * 1000; // 1 soatlik level timer starts
 
       const syncedNew = newCards.map((c) => ({
         ...c,
-        nextReviewAt: sharedStage0Time,
+        stage: deckStage,
+        nextReviewAt: deckNextReview,
       }));
       return [...syncedNew, ...prev];
     });
@@ -729,6 +751,7 @@ export function App() {
               initialDeck={studyDeckOverride}
               onSelectDeck={setStudyDeckOverride}
               onAnswer={handleAnswer}
+              onCompleteUnitLevel={handleCompleteUnitLevel}
               onGoAdd={() => navigateTo('add')}
               onLoadSample={handleLoadSample}
             />

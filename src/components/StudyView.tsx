@@ -7,7 +7,6 @@ import {
   Clock,
   FolderPlus,
   Headphones,
-  Layers,
   Play,
   Sparkles,
   Square,
@@ -21,7 +20,6 @@ import {
   formatCountdownUz,
   generateSmartChoices,
   getStageSpec,
-  isCardDue,
   pickQuizMode,
 } from '../lib/srs';
 import { speakEnglish } from '../lib/dictionary';
@@ -34,36 +32,32 @@ interface StudyViewProps {
   onAnswer: (
     cardId: string,
     isCorrect: boolean,
-    chosenDistractors: string[],
-    updateSchedule: boolean
+    chosenDistractors: string[]
   ) => void;
+  onCompleteUnitLevel: (unitName: string, currentStage: number) => void;
   onGoAdd: () => void;
   onLoadSample: () => void;
 }
 
-interface UnifiedStageBatch {
+interface UnitCardGroup {
+  unitName: string;
   stage: number;
-  stageLabel: string;
-  nextStageLabel: string;
+  levelLabel: string;
+  nextLevelLabel: string;
   cards: WordCard[];
-  dueCards: WordCard[];
-  unitNames: string[];
+  dueAtMs: number;
   isReady: boolean;
-  batchDueMs: number;
-}
-
-function stageActionTitle(stage: number): string {
-  const spec = getStageSpec(stage);
-  return `${spec.label}lik takrorlash`;
 }
 
 export function StudyView({
   cards,
   onAnswer,
+  onCompleteUnitLevel,
   onGoAdd,
   onLoadSample,
 }: StudyViewProps) {
-  const [expandedStage, setExpandedStage] = useState<number | null>(null);
+  const [selectedLevel, setSelectedLevel] = useState<number | 'all'>('all');
+  const [expandedUnit, setExpandedUnit] = useState<string | null>(null);
   const [roadReaderOpen, setRoadReaderOpen] = useState<boolean>(false);
   const [autoPlaying, setAutoPlaying] = useState<boolean>(false);
   const [activeAudioWordId, setActiveAudioWordId] = useState<string | null>(
@@ -72,15 +66,14 @@ export function StudyView({
   const [now, setNow] = useState<number>(() => Date.now());
   const autoPlayTimerRef = useRef<number | null>(null);
 
-  // Active quiz session state
-  const [quizTitle, setQuizTitle] = useState<string | null>(null);
+  // Active Unit Quiz session state
+  const [activeQuizUnit, setActiveQuizUnit] = useState<UnitCardGroup | null>(
+    null
+  );
   const [queueIds, setQueueIds] = useState<string[]>([]);
   const [initialQueueSize, setInitialQueueSize] = useState<number>(0);
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null);
-  const [answeredCardStageBefore, setAnsweredCardStageBefore] =
-    useState<number>(0);
   const [questionNonce, setQuestionNonce] = useState(0);
-  const [updateSrsOnQuiz, setUpdateSrsOnQuiz] = useState(true);
 
   // Live 1-second ticker for reverse countdowns
   useEffect(() => {
@@ -89,64 +82,63 @@ export function StudyView({
   }, []);
 
   /**
-   * Combines ALL units together by SRS Stage so units added minutes or hours apart
-   * share ONE unified batch and are reviewed together in one sitting.
+   * Groups words by Unit (`deck`). Each Unit lives as ONE card inside its current level
+   * (`1 soat`, `2 soat`, `5 soat`, `1 kun`, `3 kun`, `7 kun`, `14 kun`, `1 oy`).
    */
-  const stageBatches = useMemo<UnifiedStageBatch[]>(() => {
-    const batches: UnifiedStageBatch[] = [];
+  const unitCards = useMemo<UnitCardGroup[]>(() => {
+    const map = new Map<string, WordCard[]>();
+    for (const c of cards) {
+      const list = map.get(c.deck);
+      if (list) list.push(c);
+      else map.set(c.deck, [c]);
+    }
 
-    for (const spec of SRS_STAGES) {
-      const stageCards = cards.filter(
-        (c) => clampStage(c.stage) === spec.stage
-      );
-      if (stageCards.length === 0) continue;
+    const groups: UnitCardGroup[] = [];
+    for (const [unitName, unitWords] of map.entries()) {
+      // A unit's level is the stage of its words
+      const stage = clampStage(unitWords[0].stage);
+      const spec = getStageSpec(stage);
+      const nextSpec = getStageSpec(clampStage(stage + 1));
+      const dueAtMs = Math.max(...unitWords.map((w) => w.nextReviewAt));
+      const isReady = dueAtMs <= now;
 
-      // Shared batch timer = earliest due timestamp in this stage
-      // If any card in this stage is due, the whole stage batch is ready together!
-      const earliestDueMs = Math.min(...stageCards.map((c) => c.nextReviewAt));
-      const stageIsReady =
-        earliestDueMs <= now || stageCards.some((c) => isCardDue(c, now));
-
-      const unitNames = Array.from(
-        new Set(stageCards.map((c) => c.deck))
-      ).sort();
-
-      batches.push({
-        stage: spec.stage,
-        stageLabel: stageActionTitle(spec.stage),
-        nextStageLabel: stageActionTitle(clampStage(spec.stage + 1)),
-        cards: stageCards,
-        dueCards: stageIsReady ? stageCards : [],
-        unitNames,
-        isReady: stageIsReady,
-        batchDueMs: earliestDueMs,
+      groups.push({
+        unitName,
+        stage,
+        levelLabel: spec.label,
+        nextLevelLabel: nextSpec.label,
+        cards: unitWords,
+        dueAtMs,
+        isReady,
       });
     }
 
-    // Sort: Ready batches at top, then by soonest countdown
-    batches.sort((a, b) => {
+    // Ready units first, then by soonest due time
+    groups.sort((a, b) => {
       if (a.isReady !== b.isReady) return a.isReady ? -1 : 1;
-      return a.batchDueMs - b.batchDueMs;
+      return a.dueAtMs - b.dueAtMs;
     });
 
-    return batches;
+    return groups;
   }, [cards, now]);
 
-  const readyBatches = useMemo(
-    () => stageBatches.filter((b) => b.isReady),
-    [stageBatches]
-  );
+  // Count how many Unit Cards are in each of the 8 levels
+  const levelStats = useMemo(() => {
+    return SRS_STAGES.map((spec) => {
+      const unitsInLevel = unitCards.filter((u) => u.stage === spec.stage);
+      const readyInLevel = unitsInLevel.filter((u) => u.isReady).length;
+      return {
+        ...spec,
+        unitCount: unitsInLevel.length,
+        readyCount: readyInLevel,
+      };
+    });
+  }, [unitCards]);
 
-  const waitingBatches = useMemo(
-    () => stageBatches.filter((b) => !b.isReady),
-    [stageBatches]
-  );
-
-  // Combined list of all ready cards across all ready stages
-  const allCombinedReadyCards = useMemo(
-    () => readyBatches.flatMap((b) => b.cards),
-    [readyBatches]
-  );
+  const visibleUnits = useMemo(() => {
+    if (selectedLevel === 'all') return unitCards;
+    return unitCards.filter((u) => u.stage === selectedLevel);
+  }, [unitCards, selectedLevel]);
 
   const stopAutoPlay = () => {
     if (autoPlayTimerRef.current) {
@@ -181,24 +173,19 @@ export function StudyView({
     step();
   };
 
-  const startQuiz = (
-    targetCards: WordCard[],
-    title: string,
-    shouldUpdateSrs: boolean
-  ) => {
-    if (targetCards.length === 0) return;
+  const startUnitQuiz = (unit: UnitCardGroup) => {
+    if (unit.cards.length === 0) return;
     stopAutoPlay();
-    const ids = targetCards.map((c) => c.id);
+    const ids = unit.cards.map((c) => c.id);
     setQueueIds(ids);
     setInitialQueueSize(ids.length);
-    setQuizTitle(title);
-    setUpdateSrsOnQuiz(shouldUpdateSrs);
+    setActiveQuizUnit(unit);
     setSelectedOptionId(null);
     setQuestionNonce((n) => n + 1);
   };
 
   const exitQuiz = () => {
-    setQuizTitle(null);
+    setActiveQuizUnit(null);
     setQueueIds([]);
     setSelectedOptionId(null);
   };
@@ -242,7 +229,6 @@ export function StudyView({
 
   const handleChoose = (option: QuizOption) => {
     if (!currentCard || !activeQuestion || selectedOptionId) return;
-    setAnsweredCardStageBefore(clampStage(currentCard.stage));
     setSelectedOptionId(option.id);
 
     if (activeQuestion.mode === 'uz-to-en') {
@@ -252,32 +238,40 @@ export function StudyView({
     onAnswer(
       currentCard.id,
       option.isCorrect,
-      activeQuestion.chosenDistractors,
-      updateSrsOnQuiz
+      activeQuestion.chosenDistractors
     );
   };
 
   const handleNext = () => {
-    if (!currentCard || !selectedOptionId) return;
+    if (!currentCard || !selectedOptionId || !activeQuizUnit) return;
     const chosenOpt = activeQuestion?.options.find(
       (o) => o.id === selectedOptionId
     );
     const wasWrong = chosenOpt ? !chosenOpt.isCorrect : false;
 
-    setQueueIds((prev) => {
-      const rest = prev.slice(1);
-      if (wasWrong) {
-        const insertIdx = Math.min(2, rest.length);
-        rest.splice(insertIdx, 0, currentCard.id);
+    const rest = queueIds.slice(1);
+    if (wasWrong) {
+      // Re-insert wrong word 2 spots later so user masters the entire Unit before leveling up!
+      const insertIdx = Math.min(2, rest.length);
+      rest.splice(insertIdx, 0, currentCard.id);
+    }
+
+    if (rest.length === 0) {
+      // Entire Unit completed! Move this Unit Card to the next Level!
+      onCompleteUnitLevel(activeQuizUnit.unitName, activeQuizUnit.stage);
+      // Automatically switch the level filter if user was filtering on the old level
+      if (selectedLevel !== 'all') {
+        setSelectedLevel(Math.min(activeQuizUnit.stage + 1, 7));
       }
-      return rest;
-    });
+    }
+
+    setQueueIds(rest);
     setSelectedOptionId(null);
     setQuestionNonce((n) => n + 1);
   };
 
   useEffect(() => {
-    if (!quizTitle) return;
+    if (!activeQuizUnit) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (
         e.target instanceof HTMLInputElement ||
@@ -309,10 +303,10 @@ export function StudyView({
         <div className="empty-icon-box" aria-hidden="true">
           <FolderPlus size={26} />
         </div>
-        <h1 className="empty-title">Hali so‘z qo‘shilmagan</h1>
+        <h1 className="empty-title">Hali unit qo‘shilmagan</h1>
         <p className="empty-desc">
-          Kompyuter yoki telefonda so‘z qo‘shing, yoki Essential 3 — Unit 1
-          namunasini yuklab darhol boshlang.
+          Yangi unit qo‘shing yoki Essential 3 — Unit 1 namunasini yuklab darhol
+          boshlang.
         </p>
         <div className="empty-actions">
           <button type="button" className="btn-indigo" onClick={onGoAdd}>
@@ -328,11 +322,12 @@ export function StudyView({
     );
   }
 
-  // 2. Active Quiz Mode
-  if (quizTitle) {
+  // 2. Active Unit Quiz Mode
+  if (activeQuizUnit) {
     if (!currentCard || !activeQuestion) {
+      const nextLvl = getStageSpec(clampStage(activeQuizUnit.stage + 1));
       return (
-        <section className="empty-card" aria-label="Yakunlandi">
+        <section className="empty-card" aria-label="Unit yakunlandi">
           <div
             className="empty-icon-box"
             style={{
@@ -343,15 +338,17 @@ export function StudyView({
           >
             <CheckCircle2 size={28} />
           </div>
-          <h1 className="empty-title">Takrorlash bajarildi!</h1>
+          <h1 className="empty-title">
+            “{activeQuizUnit.unitName}” keyingi levelga o‘tdi!
+          </h1>
           <p className="empty-desc">
-            Barcha so‘zlar keyingi vaqt bosqichiga birlashtirildi va umumiy
-            teskari sanoq boshlandi.
+            <strong>{activeQuizUnit.levelLabel}</strong> bosqichi yakunlandi va
+            unit <strong>{nextLvl.label}</strong> bo‘limiga ko‘chirildi.
           </p>
           <div className="empty-actions">
             <button type="button" className="btn-green" onClick={exitQuiz}>
               <ArrowLeft size={16} aria-hidden="true" />
-              Mashq ekraniga qaytish
+              Bo‘limlarga qaytish
             </button>
           </div>
         </section>
@@ -370,7 +367,7 @@ export function StudyView({
         : 0;
 
     return (
-      <section aria-label="Takrorlash testi">
+      <section aria-label="Unit testi">
         <div className="toolbar-row" style={{ marginBottom: 10 }}>
           <button type="button" className="btn-ghost" onClick={exitQuiz}>
             <ArrowLeft size={15} aria-hidden="true" />
@@ -378,7 +375,8 @@ export function StudyView({
           </button>
 
           <span className="chip is-accent mono">
-            {quizTitle} · Qoldi: {queueIds.length}
+            {activeQuizUnit.unitName} ({activeQuizUnit.levelLabel} →{' '}
+            {activeQuizUnit.nextLevelLabel}) · Qoldi: {queueIds.length}
           </span>
         </div>
 
@@ -462,10 +460,6 @@ export function StudyView({
                 activeQuestion.options.find((o) => o.id === selectedOptionId)
                   ?.isCorrect
               );
-              const fromSpec = getStageSpec(answeredCardStageBefore);
-              const toSpec = isOk
-                ? getStageSpec(answeredCardStageBefore + 1)
-                : getStageSpec(0);
 
               return (
                 <div
@@ -480,18 +474,18 @@ export function StudyView({
                       {isOk ? (
                         <>
                           <CheckCircle2 size={18} aria-hidden="true" />
-                          To‘g‘ri! Keyingi bosqichga qo‘shildi
+                          To‘g‘ri!
                         </>
                       ) : (
                         <>
                           <XCircle size={18} aria-hidden="true" />
-                          Xato! 1 soatlik takrorlashga qaytdi
+                          Xato! Shu unit ichida yana chiqadi
                         </>
                       )}
                     </span>
 
                     <span className="box-move-badge mono">
-                      {fromSpec.label} → {toSpec.label}
+                      {activeQuizUnit.levelLabel} → {activeQuizUnit.nextLevelLabel}
                     </span>
                   </div>
 
@@ -516,36 +510,58 @@ export function StudyView({
     );
   }
 
-  // 3. Default Unified Center Screen: All Units Combined by Time Stage!
+  // 3. Main Screen: Center 8-Level Strip (1 soat, 2 soat, 5 soat, 1 kun, 3 kun, 7 kun, 14 kun, 1 oy) + Unit Cards!
   return (
     <section aria-label="Mashq">
-      <div
-        className="toolbar-row"
-        style={{ maxWidth: 560, marginInline: 'auto' }}
-      >
-        <span className="chip">
-          <Layers size={14} aria-hidden="true" />
-          Jami: {cards.length} ta so‘z (barcha unitlar birlashtirilgan)
-        </span>
+      {/* Top Row: 8-Level Horizontal Bar in Center + Road Reader Toggle */}
+      <div className="level-bar-wrap">
+        <div
+          className="srs-strip level-strip-center"
+          role="group"
+          aria-label="Takrorlash vaqt bo‘limlari"
+        >
+          <button
+            type="button"
+            className={`srs-pill ${selectedLevel === 'all' ? 'is-active' : ''}`}
+            onClick={() => setSelectedLevel('all')}
+          >
+            <span>Barchasi</span>
+            <span className="srs-pill-num">{unitCards.length}</span>
+          </button>
+
+          {levelStats.map((lvl) => (
+            <button
+              key={lvl.stage}
+              type="button"
+              className={`srs-pill ${
+                selectedLevel === lvl.stage ? 'is-active' : ''
+              } ${lvl.readyCount > 0 ? 'has-ready-unit' : ''}`}
+              onClick={() => setSelectedLevel(lvl.stage)}
+            >
+              <span>{lvl.label}</span>
+              <span className="srs-pill-num">{lvl.unitCount}</span>
+            </button>
+          ))}
+        </div>
 
         <button
           type="button"
           className={`btn-ghost ${roadReaderOpen ? 'is-active-mode' : ''}`}
-          style={{ minHeight: 40, whiteSpace: 'nowrap' }}
+          style={{ minHeight: 38, whiteSpace: 'nowrap', flexShrink: 0 }}
           onClick={() => {
             stopAutoPlay();
             setRoadReaderOpen((v) => !v);
           }}
         >
           <BookOpen size={15} aria-hidden="true" />
-          <span>{roadReaderOpen ? 'Takrorlash' : 'Yo‘lda o‘qish'}</span>
+          <span>{roadReaderOpen ? 'Unitlar' : 'Yo‘lda o‘qish'}</span>
         </button>
       </div>
 
       {roadReaderOpen ? (
         <div
           className="road-reader-wrap"
-          style={{ maxWidth: 560, marginInline: 'auto' }}
+          style={{ maxWidth: 580, marginInline: 'auto' }}
         >
           <div className="road-reader-header">
             <div>
@@ -627,99 +643,95 @@ export function StudyView({
             })}
           </div>
         </div>
+      ) : visibleUnits.length === 0 ? (
+        <div
+          className="empty-card"
+          style={{ maxWidth: 560, marginInline: 'auto', marginTop: 10 }}
+        >
+          <p className="empty-desc">
+            Hozircha <strong>{selectedLevel !== 'all' ? getStageSpec(selectedLevel).label : ''}</strong> bo‘limida unit yo‘q. Oldingi leveldagi unitlarni qaytarganingizdan keyin bu yerga avtomatik o‘tadi.
+          </p>
+        </div>
       ) : (
         <div className="center-tasks-feed">
-          {/* If 2+ stages are due at once (e.g. morning's 5-hour + evening's 1-hour), offer ONE combined button! */}
-          {readyBatches.length > 1 && (
-            <div className="popup-task-card is-ready">
-              <div className="popup-task-top">
-                <span className="popup-ready-pill">
-                  <span className="pulse-dot" aria-hidden="true" />
-                  Barcha tayyor takrorlashlar birlashtirildi
-                </span>
-                <span className="leitner-count-pill mono">
-                  {allCombinedReadyCards.length} ta so‘z
-                </span>
-              </div>
-
-              <h2 className="popup-unit-title">
-                Umumiy takrorlash ({readyBatches.map((b) => b.stageLabel).join(' + ')})
-              </h2>
-              <p className="popup-unit-sub">
-                Ertalabki va kechki unitlarni alohida-alohida o‘tirmasdan, bitta
-                sessiyada birga takrorlang
-              </p>
-
-              <div className="popup-task-actions">
-                <button
-                  type="button"
-                  className="btn-green"
-                  style={{ width: '100%', minHeight: 50, fontSize: 15 }}
-                  onClick={() =>
-                    startQuiz(
-                      allCombinedReadyCards,
-                      'Umumiy takrorlash',
-                      true
-                    )
-                  }
-                >
-                  <Play size={17} aria-hidden="true" />
-                  Hammasini birga boshlash ({allCombinedReadyCards.length} ta so‘z)
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* 1. READY STAGE BATCHES */}
-          {readyBatches.map((batch) => {
-            const isExpanded = expandedStage === batch.stage;
+          {visibleUnits.map((unit) => {
+            const isExpanded = expandedUnit === unit.unitName;
             return (
-              <div key={batch.stage} className="popup-task-card is-ready">
+              <div
+                key={unit.unitName}
+                className={`popup-task-card ${
+                  unit.isReady ? 'is-ready' : 'is-waiting'
+                }`}
+              >
                 <div className="popup-task-top">
-                  <span className="popup-ready-pill">
-                    <span className="pulse-dot" aria-hidden="true" />
-                    Vaqti keldi!
-                  </span>
-                  <span className="leitner-count-pill mono">
-                    {batch.cards.length} ta so‘z
-                  </span>
+                  {unit.isReady ? (
+                    <span className="popup-ready-pill">
+                      <span className="pulse-dot" aria-hidden="true" />
+                      {unit.levelLabel} · Vaqti keldi!
+                    </span>
+                  ) : (
+                    <span className="popup-wait-pill">
+                      <Clock size={14} aria-hidden="true" />
+                      <span>Level: {unit.levelLabel}</span>
+                    </span>
+                  )}
+
+                  {unit.isReady ? (
+                    <span className="leitner-count-pill mono">
+                      {unit.cards.length} ta so‘z
+                    </span>
+                  ) : (
+                    <span className="countdown-badge mono">
+                      {formatCountdownUz(unit.dueAtMs, now)}
+                    </span>
+                  )}
                 </div>
 
-                <h2 className="popup-unit-title">{batch.stageLabel}</h2>
+                <h2 className="popup-unit-title">{unit.unitName}</h2>
                 <p className="popup-unit-sub">
-                  Ichidagi unitlar: {batch.unitNames.join(', ')} · Keyingi
-                  bosqich: {batch.nextStageLabel}
+                  {unit.cards.length} ta so‘z · Qaytarganingizdan keyin{' '}
+                  <strong>{unit.nextLevelLabel}</strong> bo‘limiga o‘tadi
                 </p>
 
                 <div className="popup-task-actions">
-                  <button
-                    type="button"
-                    className="btn-green"
-                    style={{ flex: 1, minHeight: 48, fontSize: 15 }}
-                    onClick={() =>
-                      startQuiz(batch.cards, batch.stageLabel, true)
-                    }
-                  >
-                    <Play size={17} aria-hidden="true" />
-                    {batch.stageLabel}ni boshlash ({batch.cards.length})
-                  </button>
+                  {unit.isReady ? (
+                    <button
+                      type="button"
+                      className="btn-green"
+                      style={{ flex: 1, minHeight: 48, fontSize: 15 }}
+                      onClick={() => startUnitQuiz(unit)}
+                    >
+                      <Play size={17} aria-hidden="true" />
+                      Qaytarishni boshlash ({unit.cards.length})
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn-indigo"
+                      style={{ flex: 1, minHeight: 44, fontSize: 14 }}
+                      onClick={() => startUnitQuiz(unit)}
+                    >
+                      <Play size={15} aria-hidden="true" />
+                      Hozir qaytarish ({unit.levelLabel} → {unit.nextLevelLabel})
+                    </button>
+                  )}
 
                   <button
                     type="button"
                     className="btn-ghost"
-                    style={{ minHeight: 48, paddingInline: 14 }}
+                    style={{ minHeight: 44, paddingInline: 14 }}
                     onClick={() =>
-                      setExpandedStage(isExpanded ? null : batch.stage)
+                      setExpandedUnit(isExpanded ? null : unit.unitName)
                     }
                   >
                     <BookOpen size={16} aria-hidden="true" />
-                    {isExpanded ? 'Yopish' : 'Ko‘rish'}
+                    {isExpanded ? 'Yopish' : 'So‘zlar'}
                   </button>
                 </div>
 
                 {isExpanded && (
                   <div className="leitner-drawer">
-                    {batch.cards.map((w) => (
+                    {unit.cards.map((w) => (
                       <button
                         key={w.id}
                         type="button"
@@ -754,113 +766,6 @@ export function StudyView({
                             — {w.uz}
                           </span>
                         </div>
-                        <span
-                          className="mono"
-                          style={{ fontSize: 11, color: 'var(--text-muted)' }}
-                        >
-                          {w.deck}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-
-          {/* 2. WAITING STAGE BATCHES (Unified countdown per stage!) */}
-          {waitingBatches.map((batch) => {
-            const isExpanded = expandedStage === batch.stage;
-            return (
-              <div key={batch.stage} className="popup-task-card is-waiting">
-                <div className="popup-task-top">
-                  <span className="popup-wait-pill">
-                    <Clock size={14} aria-hidden="true" />
-                    <span>Kutilmoqda</span>
-                  </span>
-
-                  <span className="countdown-badge mono">
-                    {formatCountdownUz(batch.batchDueMs, now)}
-                  </span>
-                </div>
-
-                <h2 className="popup-unit-title">{batch.stageLabel}</h2>
-                <p className="popup-unit-sub">
-                  {batch.cards.length} ta so‘z ({batch.unitNames.join(', ')}) ·
-                  Vaqt tugaganda hammasi bitta bo‘lib chiqadi
-                </p>
-
-                <div className="popup-task-actions">
-                  <button
-                    type="button"
-                    className="btn-ghost"
-                    style={{ flex: 1, minHeight: 42 }}
-                    onClick={() =>
-                      setExpandedStage(isExpanded ? null : batch.stage)
-                    }
-                  >
-                    <BookOpen size={15} aria-hidden="true" />
-                    {isExpanded
-                      ? 'Ro‘yxatni yopish'
-                      : `So‘zlarni o‘qish (${batch.cards.length})`}
-                  </button>
-
-                  <button
-                    type="button"
-                    className="btn-indigo"
-                    style={{ minHeight: 42, paddingInline: 14, fontSize: 13 }}
-                    onClick={() =>
-                      startQuiz(batch.cards, batch.stageLabel, true)
-                    }
-                  >
-                    <Play size={14} aria-hidden="true" />
-                    Kutmasdan boshlash
-                  </button>
-                </div>
-
-                {isExpanded && (
-                  <div className="leitner-drawer">
-                    {batch.cards.map((w) => (
-                      <button
-                        key={w.id}
-                        type="button"
-                        className="leitner-drawer-row"
-                        onClick={() => speakEnglish(w.en, w.audioUrl)}
-                      >
-                        <Volume2
-                          size={16}
-                          style={{
-                            color: 'var(--accent-brand)',
-                            flexShrink: 0,
-                          }}
-                          aria-hidden="true"
-                        />
-                        <div
-                          style={{ flex: 1, minWidth: 0, textAlign: 'left' }}
-                        >
-                          <strong
-                            style={{
-                              color: 'var(--text-primary)',
-                              fontSize: 15,
-                            }}
-                          >
-                            {w.en}
-                          </strong>{' '}
-                          <span
-                            style={{
-                              color: 'var(--text-secondary)',
-                              fontSize: 14,
-                            }}
-                          >
-                            — {w.uz}
-                          </span>
-                        </div>
-                        <span
-                          className="mono"
-                          style={{ fontSize: 11, color: 'var(--text-muted)' }}
-                        >
-                          {w.deck}
-                        </span>
                       </button>
                     ))}
                   </div>

@@ -1613,6 +1613,26 @@ textarea:focus-visible {
   }
 }
 
+/* 8-Level Horizontal Center Bar */
+.level-bar-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.level-strip-center {
+  margin-bottom: 0;
+  flex: 1;
+}
+
+.srs-pill.has-ready-unit:not(.is-active) {
+  border-color: rgba(34, 197, 94, 0.65);
+  color: var(--accent-green);
+}
+
 /* Center Popup Unit Review Feed (Zero Empty Boxes!) */
 .center-tasks-feed {
   display: flex;

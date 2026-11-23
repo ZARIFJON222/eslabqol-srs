@@ -22,78 +22,81 @@ const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
 
 /**
- * 7 Visual Leitner Time Boxes (WordCard-inspired):
- * Box 1: Har 1 soatda
- * Box 2: Har 5 soatda
- * Box 3: Har 1 kunda
- * Box 4: Har 3 kunda
- * Box 5: Har 7 kunda
- * Box 6: Har 14 kunda
- * Box 7: Har 1 oyda (Uzoq muddatli xotira)
+ * 8 Visual Levels (1 soat -> 2 soat -> 5 soat -> 1 kun -> 3 kun -> 7 kun -> 14 kun -> 1 oy)
+ * Units collect as cards inside each level and advance to the next level after review.
  */
 export const SRS_STAGES: StageSpec[] = [
   {
     stage: 0,
     boxNumber: 1,
-    title: 'Har 1 soatda',
+    title: '1 soatlik bosqich',
     label: '1 soat',
-    desc: 'Yangi va qayta o‘rganilayotgan so‘zlar',
+    desc: 'Yangi qo‘shilgan unitlar shu yerda 1 soatdan keyin qaytariladi',
     intervalMs: 1 * HOUR,
-    phase: '1-bosqich',
+    phase: '1-level',
   },
   {
     stage: 1,
     boxNumber: 2,
-    title: 'Har 5 soatda',
-    label: '5 soat',
-    desc: 'Birinchi sinovdan o‘tgan so‘zlar',
-    intervalMs: 5 * HOUR,
-    phase: '2-bosqich',
+    title: '2 soatlik bosqich',
+    label: '2 soat',
+    desc: '1 soatlikdan o‘tgan unitlar 2 soatdan keyin qaytariladi',
+    intervalMs: 2 * HOUR,
+    phase: '2-level',
   },
   {
     stage: 2,
     boxNumber: 3,
-    title: 'Har 1 kunda',
-    label: '1 kun',
-    desc: 'Kunlik mustahkamlash qutisi',
-    intervalMs: 1 * DAY,
-    phase: '3-bosqich',
+    title: '5 soatlik bosqich',
+    label: '5 soat',
+    desc: '2 soatlikdan o‘tgan unitlar 5 soatdan keyin qaytariladi',
+    intervalMs: 5 * HOUR,
+    phase: '3-level',
   },
   {
     stage: 3,
     boxNumber: 4,
-    title: 'Har 3 kunda',
-    label: '3 kun',
-    desc: 'Esda qola boshlagan so‘zlar',
-    intervalMs: 3 * DAY,
-    phase: '4-bosqich',
+    title: '1 kunlik bosqich',
+    label: '1 kun',
+    desc: '1 kundan keyin qaytariladigan unitlar',
+    intervalMs: 1 * DAY,
+    phase: '4-level',
   },
   {
     stage: 4,
     boxNumber: 5,
-    title: 'Har 7 kunda',
-    label: '7 kun',
-    desc: 'Haftalik tekshiruv qutisi',
-    intervalMs: 7 * DAY,
-    phase: '5-bosqich',
+    title: '3 kunlik bosqich',
+    label: '3 kun',
+    desc: '3 kundan keyin qaytariladigan unitlar',
+    intervalMs: 3 * DAY,
+    phase: '5-level',
   },
   {
     stage: 5,
     boxNumber: 6,
-    title: 'Har 14 kunda',
-    label: '14 kun',
-    desc: 'Ikki haftalik mustahkam xotira',
-    intervalMs: 14 * DAY,
-    phase: '6-bosqich',
+    title: '7 kunlik bosqich',
+    label: '7 kun',
+    desc: '7 kundan keyin qaytariladigan unitlar',
+    intervalMs: 7 * DAY,
+    phase: '6-level',
   },
   {
     stage: 6,
     boxNumber: 7,
-    title: 'Har 1 oyda',
+    title: '14 kunlik bosqich',
+    label: '14 kun',
+    desc: '14 kundan keyin qaytariladigan unitlar',
+    intervalMs: 14 * DAY,
+    phase: '7-level',
+  },
+  {
+    stage: 7,
+    boxNumber: 8,
+    title: '1 oylik bosqich',
     label: '1 oy',
-    desc: 'Uzoq muddatli xotiraga muhrlangan so‘zlar',
+    desc: 'Uzoq muddatli xotiraga o‘tgan unitlar',
     intervalMs: 30 * DAY,
-    phase: '7-bosqich',
+    phase: '8-level',
   },
 ];
 
