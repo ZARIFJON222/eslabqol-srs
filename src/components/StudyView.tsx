@@ -116,8 +116,10 @@ export function StudyView({
       // Strict discipline lock deadline: if due and neglected for another full interval
       // (e.g. 7-day unit not done after 14 days / 2 weeks total, or 1-hour unit not done after 2 hours total)
       const lockAtMs = dueAtMs + spec.intervalMs;
-      const isReady = now >= dueAtMs;
-      const isLockingOthers = now >= lockAtMs;
+      // Stage 0 (1 soat) is always open immediately for newly added units;
+      // Stage >= 1 (2 soat, 5 soat, 1 kun...) strictly waits until dueAtMs!
+      const isReady = stage === 0 || now >= dueAtMs;
+      const isLockingOthers = stage >= 1 && now >= lockAtMs;
       const overdueDurationMs = Math.max(0, now - dueAtMs);
 
       groups.push({

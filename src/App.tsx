@@ -296,7 +296,7 @@ export function App() {
       const unitStage = existingInSameUnit ? existingInSameUnit.stage : 0;
       const unitStrictDue = existingInSameUnit
         ? existingInSameUnit.nextReviewAt
-        : now + 1 * 3600 * 1000; // Strictly 1 hour for Stage 0 (1 soatlik time frame)
+        : now; // Stage 0 (1 soat) is open right away; strict wait timers start from 2 soat onwards
 
       const syncedNew = newCards.map((c) => ({
         ...c,
