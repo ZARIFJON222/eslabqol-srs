@@ -8,6 +8,7 @@ import {
   Menu,
   PlusCircle,
   RefreshCw,
+  Sparkles,
   Volume2,
   X,
   Zap,
@@ -43,13 +44,14 @@ import {
 import { StudyView } from './components/StudyView';
 import { AddView } from './components/AddView';
 import { LibraryView } from './components/LibraryView';
+import { AiCoachView } from './components/AiCoachView';
 
-type SimpleTab = 'study' | 'add' | 'library';
+type SimpleTab = 'study' | 'add' | 'library' | 'ai';
 
 function getInitialTab(): SimpleTab {
   if (typeof window === 'undefined') return 'study';
   const t = new URLSearchParams(window.location.search).get('tab');
-  if (t === 'study' || t === 'add' || t === 'library') return t;
+  if (t === 'study' || t === 'add' || t === 'library' || t === 'ai') return t;
   return 'study';
 }
 
@@ -321,6 +323,33 @@ export function App() {
     );
   };
 
+  const handleUpdateCard = (
+    id: string,
+    patch: Partial<Pick<WordCard, 'en' | 'uz' | 'deck'>>
+  ) => {
+    setCards((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, ...patch } : c))
+    );
+  };
+
+  const handleRenameDeck = (oldName: string, newName: string) => {
+    setCards((prev) =>
+      prev.map((c) => (c.deck === oldName ? { ...c, deck: newName } : c))
+    );
+  };
+
+  const handleBatchFixCards = (
+    updates: Array<{ id: string; en: string; uz: string }>
+  ) => {
+    const map = new Map(updates.map((u) => [u.id, u]));
+    setCards((prev) =>
+      prev.map((c) => {
+        const u = map.get(c.id);
+        return u ? { ...c, en: u.en, uz: u.uz } : c;
+      })
+    );
+  };
+
   const handleImportCards = (imported: WordCard[]) => {
     setCards((prev) => mergeCardLists(prev, imported));
   };
@@ -557,9 +586,9 @@ export function App() {
             </div>
           )}
 
-          {/* Desktop-only 3-Tab Pill Navigation Bar (Oldingiday!) */}
+          {/* Desktop-only 4-Tab Pill Navigation Bar */}
           <nav
-            className="wc-nav wc-nav-3 desktop-only-grid"
+            className="wc-nav"
             aria-label="Asosiy menyu"
           >
             <button
@@ -591,6 +620,15 @@ export function App() {
               {cards.length > 0 && (
                 <span className="wc-nav-badge">{cards.length}</span>
               )}
+            </button>
+
+            <button
+              type="button"
+              className={`wc-nav-btn ${tab === 'ai' ? 'is-active' : ''}`}
+              onClick={() => navigateTo('ai')}
+            >
+              <Sparkles size={16} aria-hidden="true" />
+              <span>AI Ustoz</span>
             </button>
           </nav>
         </div>
@@ -663,6 +701,15 @@ export function App() {
                 <FolderOpen size={18} aria-hidden="true" />
                 <span>Barcha so‘zlar va Unitlar</span>
                 <span className="drawer-badge">{cards.length}</span>
+              </button>
+
+              <button
+                type="button"
+                className={`drawer-nav-item ${tab === 'ai' ? 'is-active' : ''}`}
+                onClick={() => navigateTo('ai')}
+              >
+                <Sparkles size={18} aria-hidden="true" />
+                <span>AI Ustoz (Nazorat & Vazifa)</span>
               </button>
             </nav>
 
@@ -773,10 +820,15 @@ export function App() {
               decks={decks}
               onDeleteCard={handleDeleteCard}
               onResetCard={handleResetCard}
+              onUpdateCard={handleUpdateCard}
+              onRenameDeck={handleRenameDeck}
+              onBatchFixCards={handleBatchFixCards}
               onImportCards={handleImportCards}
               onStudyDeck={(deckName) => navigateTo('study', deckName)}
             />
           )}
+
+          {tab === 'ai' && <AiCoachView cards={cards} stats={stats} />}
         </div>
       </main>
     </div>

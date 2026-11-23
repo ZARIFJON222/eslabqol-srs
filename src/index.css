@@ -1779,6 +1779,92 @@ textarea:focus-visible {
   margin-top: 6px;
 }
 
+/* Mini-Games (Match & Scramble) */
+.match-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.match-col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.match-tile {
+  min-height: 48px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background-color: var(--bg-surface-2);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out);
+}
+
+.match-tile.is-picked {
+  border-color: var(--accent-indigo);
+  background-color: var(--accent-indigo-soft);
+}
+
+.match-tile.is-wrong {
+  border-color: var(--accent-red);
+  background-color: var(--accent-red-soft);
+}
+
+.match-tile.is-done {
+  opacity: 0.25;
+  border-color: var(--accent-green);
+  cursor: default;
+}
+
+.scramble-slots {
+  min-height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 20px;
+  border-radius: var(--radius-md);
+  background-color: var(--bg-input);
+  border: 1px dashed var(--border-strong);
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--accent-brand);
+  margin-bottom: 16px;
+}
+
+.scramble-letters {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.scramble-key {
+  min-width: 40px;
+  height: 42px;
+  padding: 0 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+  background-color: var(--bg-surface-2);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.scramble-key.is-used {
+  opacity: 0.22;
+  cursor: default;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

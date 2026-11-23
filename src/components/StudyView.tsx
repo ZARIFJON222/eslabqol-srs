@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   Clock,
   FolderPlus,
+  Gamepad2,
   Headphones,
   Lock,
   Play,
@@ -25,6 +26,7 @@ import {
   pickQuizMode,
 } from '../lib/srs';
 import { speakEnglish } from '../lib/dictionary';
+import { MiniGamesView } from './MiniGamesView';
 
 interface StudyViewProps {
   cards: WordCard[];
@@ -65,6 +67,7 @@ export function StudyView({
   const [selectedLevel, setSelectedLevel] = useState<number | 'all'>('all');
   const [expandedUnit, setExpandedUnit] = useState<string | null>(null);
   const [roadReaderOpen, setRoadReaderOpen] = useState<boolean>(false);
+  const [gameUnit, setGameUnit] = useState<UnitCardGroup | null>(null);
   const [autoPlaying, setAutoPlaying] = useState<boolean>(false);
   const [activeAudioWordId, setActiveAudioWordId] = useState<string | null>(
     null
@@ -151,6 +154,18 @@ export function StudyView({
   );
 
   const primaryBlocker = blockingUnits[0] ?? null;
+
+  // Identify the most recent unit in 1h or 2h time frame for Mini-Games
+  const latestEarlyUnitName = useMemo(() => {
+    const earlyUnits = unitCards.filter((u) => u.stage === 0 || u.stage === 1);
+    if (earlyUnits.length === 0) return null;
+    const sorted = [...earlyUnits].sort((a, b) => {
+      const aMax = Math.max(...a.cards.map((c) => c.lastReviewedAt || c.createdAt));
+      const bMax = Math.max(...b.cards.map((c) => c.lastReviewedAt || c.createdAt));
+      return bMax - aMax;
+    });
+    return sorted[0]?.unitName ?? null;
+  }, [unitCards]);
 
   // Count how many Unit Cards are in each of the 8 Time Frames
   const levelStats = useMemo(() => {
@@ -358,7 +373,18 @@ export function StudyView({
     );
   }
 
-  // 2. Active Unit Quiz Mode
+  // 2. Mini-Games View (for latest 1h / 2h unit while waiting)
+  if (gameUnit) {
+    return (
+      <MiniGamesView
+        unitName={gameUnit.unitName}
+        words={gameUnit.cards}
+        onClose={() => setGameUnit(null)}
+      />
+    );
+  }
+
+  // 3. Active Unit Quiz Mode
   if (activeQuizUnit) {
     if (!currentCard || !activeQuestion) {
       const nextLvl = getStageSpec(clampStage(activeQuizUnit.stage + 1));
@@ -813,16 +839,30 @@ export function StudyView({
                       {unit.levelLabel}likni boshlash ({unit.cards.length})
                     </button>
                   ) : (
-                    <button
-                      type="button"
-                      className="btn-indigo"
-                      style={{ flex: 1, minHeight: 44, fontSize: 14 }}
-                      onClick={() => startUnitQuiz(unit)}
-                    >
-                      <Play size={15} aria-hidden="true" />
-                      Kutmasdan hozir tugatish ({unit.levelLabel} →{' '}
-                      {unit.nextLevelLabel})
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        className="btn-ghost"
+                        disabled
+                        style={{ flex: 1, minHeight: 44, opacity: 0.78 }}
+                      >
+                        <Lock size={15} aria-hidden="true" />
+                        Vaqti kelmagan ({formatCountdownUz(unit.dueAtMs, now)})
+                      </button>
+
+                      {(unit.stage === 0 || unit.stage === 1) &&
+                        unit.unitName === latestEarlyUnitName && (
+                          <button
+                            type="button"
+                            className="btn-indigo"
+                            style={{ minHeight: 44, paddingInline: 14, fontSize: 13 }}
+                            onClick={() => setGameUnit(unit)}
+                          >
+                            <Gamepad2 size={16} aria-hidden="true" />
+                            O‘yinlar
+                          </button>
+                        )}
+                    </>
                   )}
 
                   <button

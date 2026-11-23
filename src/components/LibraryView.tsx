@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Check,
   Download,
+  Pencil,
   Play,
   RotateCcw,
+  Sparkles,
   Trash2,
   Upload,
   Volume2,
+  X,
 } from 'lucide-react';
 import type { DailyStats, WordCard } from '../types';
 import {
@@ -17,6 +21,7 @@ import {
 } from '../lib/srs';
 import { speakEnglish } from '../lib/dictionary';
 import { exportBackupJson, parseBackupJson } from '../lib/storage';
+import { auditWordsWithAi, getGeminiApiKey } from '../lib/ai';
 
 interface LibraryViewProps {
   cards: WordCard[];
@@ -24,6 +29,14 @@ interface LibraryViewProps {
   decks: string[];
   onDeleteCard: (id: string) => void;
   onResetCard: (id: string) => void;
+  onUpdateCard: (
+    id: string,
+    patch: Partial<Pick<WordCard, 'en' | 'uz' | 'deck'>>
+  ) => void;
+  onRenameDeck: (oldName: string, newName: string) => void;
+  onBatchFixCards: (
+    updates: Array<{ id: string; en: string; uz: string }>
+  ) => void;
   onImportCards: (imported: WordCard[]) => void;
   onStudyDeck: (deckName: string) => void;
 }
@@ -34,6 +47,9 @@ export function LibraryView({
   decks,
   onDeleteCard,
   onResetCard,
+  onUpdateCard,
+  onRenameDeck,
+  onBatchFixCards,
   onImportCards,
   onStudyDeck,
 }: LibraryViewProps) {
@@ -45,19 +61,31 @@ export function LibraryView({
   const [now, setNow] = useState<number>(() => Date.now());
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  // Unit rename state
+  const [renamingDeck, setRenamingDeck] = useState<string | null>(null);
+  const [renameDeckValue, setRenameDeckValue] = useState('');
+
+  // Word inline edit state
+  const [editingWordId, setEditingWordId] = useState<string | null>(null);
+  const [editEn, setEditEn] = useState('');
+  const [editUz, setEditUz] = useState('');
+  const [editDeck, setEditDeck] = useState('');
+
+  // AI Audit state
+  const [aiAuditing, setAiAuditing] = useState(false);
+
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, []);
 
   const deckSummaries = useMemo(() => {
-    const now = Date.now();
     return decks.map((name) => {
       const list = cards.filter((c) => c.deck === name);
       const due = list.filter((c) => isCardDue(c, now)).length;
       return { name, total: list.length, due };
     });
-  }, [cards, decks]);
+  }, [cards, decks, now]);
 
   const stageCounts = useMemo(() => {
     const scoped = cards.filter(
@@ -73,7 +101,9 @@ export function LibraryView({
     const q = search.trim().toLowerCase();
     return cards
       .filter((c) => deckFilter === 'all' || c.deck === deckFilter)
-      .filter((c) => stageFilter === 'all' || clampStage(c.stage) === stageFilter)
+      .filter(
+        (c) => stageFilter === 'all' || clampStage(c.stage) === stageFilter
+      )
       .filter(
         (c) =>
           !q ||
@@ -98,6 +128,44 @@ export function LibraryView({
     e.target.value = '';
   };
 
+  const handleNormalizeAndAiFix = async () => {
+    if (filtered.length === 0 || aiAuditing) return;
+    setAiAuditing(true);
+    setImportMsg(null);
+
+    try {
+      if (getGeminiApiKey()) {
+        const targetSlice = filtered.slice(0, 40);
+        const fixes = await auditWordsWithAi(targetSlice);
+        const updates = fixes.map((f) => ({ id: f.id, en: f.en, uz: f.uz }));
+        if (updates.length > 0) {
+          onBatchFixCards(updates);
+          setImportMsg(
+            `AI ${updates.length} ta so‘zni tekshirdi: katta harflar va imlo xatolari to‘g‘rilandi!`
+          );
+          return;
+        }
+      }
+
+      // Offline / no-key fallback: lowercase accidental leading capitals
+      const localFixes = filtered.map((c) => ({
+        id: c.id,
+        en: c.en.trim().toLowerCase(),
+        uz: c.uz.trim().toLowerCase(),
+      }));
+      onBatchFixCards(localFixes);
+      setImportMsg(
+        `${localFixes.length} ta so‘zda bosh harflar kichik harfga to‘g‘rilandi.`
+      );
+    } catch (e) {
+      setImportMsg(
+        e instanceof Error ? e.message : 'AI bilan tekshirishda xatolik.'
+      );
+    } finally {
+      setAiAuditing(false);
+    }
+  };
+
   return (
     <section aria-label="Unitlar va so‘zlar">
       <div className="section-header-row">
@@ -108,7 +176,18 @@ export function LibraryView({
           </p>
         </div>
 
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          <button
+            type="button"
+            className="btn-indigo"
+            style={{ minHeight: 38, padding: '6px 12px', fontSize: 13 }}
+            disabled={filtered.length === 0 || aiAuditing}
+            onClick={() => void handleNormalizeAndAiFix()}
+          >
+            <Sparkles size={14} aria-hidden="true" />
+            {aiAuditing ? 'Tekshirilmoqda...' : 'AI bilan tozalash'}
+          </button>
+
           <button
             type="button"
             className="btn-ghost"
@@ -146,28 +225,95 @@ export function LibraryView({
         <div className="deck-grid">
           {deckSummaries.map((d) => {
             const isSelected = deckFilter === d.name;
+            const isRenaming = renamingDeck === d.name;
+
             return (
               <div
                 key={d.name}
                 className={`deck-card ${isSelected ? 'is-selected' : ''}`}
-                onClick={() =>
-                  setDeckFilter((prev) => (prev === d.name ? 'all' : d.name))
-                }
+                onClick={() => {
+                  if (!isRenaming) {
+                    setDeckFilter((prev) => (prev === d.name ? 'all' : d.name));
+                  }
+                }}
                 role="button"
                 tabIndex={0}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
+                  if (!isRenaming && (e.key === 'Enter' || e.key === ' ')) {
                     e.preventDefault();
                     setDeckFilter((prev) => (prev === d.name ? 'all' : d.name));
                   }
                 }}
               >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
-                  <span className="deck-card-title">{d.name}</span>
-                  {d.due > 0 && (
-                    <span className="chip is-accent mono">{d.due} tayyor</span>
-                  )}
-                </div>
+                {isRenaming ? (
+                  <div
+                    style={{ display: 'flex', gap: 6 }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <input
+                      className="field-input"
+                      style={{ minHeight: 36, padding: '4px 10px', fontSize: 13 }}
+                      value={renameDeckValue}
+                      onChange={(e) => setRenameDeckValue(e.target.value)}
+                      autoFocus
+                    />
+                    <button
+                      type="button"
+                      className="btn-green"
+                      style={{ minHeight: 36, padding: '4px 10px' }}
+                      onClick={() => {
+                        const clean = renameDeckValue.trim();
+                        if (clean && clean !== d.name) {
+                          onRenameDeck(d.name, clean);
+                          if (deckFilter === d.name) setDeckFilter(clean);
+                        }
+                        setRenamingDeck(null);
+                      }}
+                    >
+                      <Check size={14} aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-ghost"
+                      style={{ minHeight: 36, padding: '4px 10px' }}
+                      onClick={() => setRenamingDeck(null)}
+                    >
+                      <X size={14} aria-hidden="true" />
+                    </button>
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'flex-start',
+                      gap: 8,
+                    }}
+                  >
+                    <span className="deck-card-title">{d.name}</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      {d.due > 0 && (
+                        <span className="chip is-accent mono">
+                          {d.due} tayyor
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        className="btn-danger-icon"
+                        style={{ width: 28, height: 28 }}
+                        title="Unit nomini tahrirlash"
+                        aria-label={`${d.name} nomini tahrirlash`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setRenamingDeck(d.name);
+                          setRenameDeckValue(d.name);
+                        }}
+                      >
+                        <Pencil size={13} aria-hidden="true" />
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 <div className="deck-card-meta">
                   <span className="mono">{d.total} ta so‘z</span>
@@ -190,7 +336,11 @@ export function LibraryView({
         </div>
       )}
 
-      <div className="srs-strip" role="group" aria-label="Takrorlash oralig‘i bo‘yicha filtr">
+      <div
+        className="srs-strip"
+        role="group"
+        aria-label="Takrorlash oralig‘i bo‘yicha filtr"
+      >
         <button
           type="button"
           className={`srs-pill ${stageFilter === 'all' ? 'is-active' : ''}`}
@@ -230,6 +380,68 @@ export function LibraryView({
         <div className="word-list">
           {filtered.map((card) => {
             const due = isCardDue(card, now);
+            const isEditing = editingWordId === card.id;
+
+            if (isEditing) {
+              return (
+                <div
+                  key={card.id}
+                  className="word-row-card"
+                  style={{ flexDirection: 'column', alignItems: 'stretch', gap: 10 }}
+                >
+                  <div className="form-2col">
+                    <input
+                      className="field-input"
+                      value={editEn}
+                      onChange={(e) => setEditEn(e.target.value)}
+                      placeholder="Inglizcha"
+                    />
+                    <input
+                      className="field-input"
+                      value={editUz}
+                      onChange={(e) => setEditUz(e.target.value)}
+                      placeholder="O‘zbekcha"
+                    />
+                  </div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <input
+                      className="field-input"
+                      style={{ flex: 1 }}
+                      value={editDeck}
+                      onChange={(e) => setEditDeck(e.target.value)}
+                      placeholder="Unit nomi"
+                    />
+                    <button
+                      type="button"
+                      className="btn-green"
+                      style={{ minHeight: 40, padding: '6px 14px' }}
+                      onClick={() => {
+                        if (editEn.trim() && editUz.trim()) {
+                          onUpdateCard(card.id, {
+                            en: editEn.trim(),
+                            uz: editUz.trim(),
+                            deck: editDeck.trim() || card.deck,
+                          });
+                        }
+                        setEditingWordId(null);
+                      }}
+                    >
+                      <Check size={15} aria-hidden="true" />
+                      Saqlash
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-ghost"
+                      style={{ minHeight: 40 }}
+                      onClick={() => setEditingWordId(null)}
+                    >
+                      Bekor
+                    </button>
+                  </div>
+                </div>
+              );
+            }
+
             return (
               <div key={card.id} className="word-row-card">
                 <div className="word-row-left">
@@ -269,8 +481,23 @@ export function LibraryView({
                       : formatCountdownUz(card.nextReviewAt, now)}
                   </span>
                   <span className="chip is-accent mono">
-                    {SRS_STAGES[clampStage(card.stage)]?.title || 'Har 1 soatda'}
+                    {SRS_STAGES[clampStage(card.stage)]?.label || '1 soat'}
                   </span>
+
+                  <button
+                    type="button"
+                    className="btn-danger-icon"
+                    title="So‘zni tahrirlash"
+                    aria-label={`${card.en} so‘zini tahrirlash`}
+                    onClick={() => {
+                      setEditingWordId(card.id);
+                      setEditEn(card.en);
+                      setEditUz(card.uz);
+                      setEditDeck(card.deck);
+                    }}
+                  >
+                    <Pencil size={14} aria-hidden="true" />
+                  </button>
 
                   <button
                     type="button"
