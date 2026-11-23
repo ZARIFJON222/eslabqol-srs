@@ -1,6 +1,7 @@
 import type { DailyStats, WordCard } from '../types';
 
 const CARDS_KEY = 'eslabqol_cards_v1';
+const SAFE_BACKUP_KEY = 'eslabqol_safe_backup_v1';
 const STATS_KEY = 'eslabqol_stats_v1';
 
 export function getTodayKey(date: Date = new Date()): string {
@@ -13,9 +14,19 @@ export function getTodayKey(date: Date = new Date()): string {
 export function loadCards(): WordCard[] {
   try {
     const raw = localStorage.getItem(CARDS_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as WordCard[]) : [];
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed as WordCard[];
+      }
+    }
+    // Fallback to safe backup if main key was somehow cleared
+    const safeRaw = localStorage.getItem(SAFE_BACKUP_KEY);
+    if (safeRaw) {
+      const safeParsed = JSON.parse(safeRaw);
+      if (Array.isArray(safeParsed)) return safeParsed as WordCard[];
+    }
+    return [];
   } catch {
     return [];
   }
@@ -24,6 +35,10 @@ export function loadCards(): WordCard[] {
 export function saveCards(cards: WordCard[]): void {
   try {
     localStorage.setItem(CARDS_KEY, JSON.stringify(cards));
+    // Always preserve the last non-empty snapshot locally as a safety net
+    if (cards.length > 0) {
+      localStorage.setItem(SAFE_BACKUP_KEY, JSON.stringify(cards));
+    }
   } catch {
     // storage quota ignored
   }

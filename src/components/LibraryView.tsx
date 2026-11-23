@@ -22,6 +22,11 @@ import {
 import { speakEnglish } from '../lib/dictionary';
 import { exportBackupJson, parseBackupJson } from '../lib/storage';
 import { auditWordsWithAi, getGeminiApiKey } from '../lib/ai';
+import {
+  getSyncId,
+  listCloudBackups,
+  type CloudBackupEntry,
+} from '../lib/firebase';
 
 interface LibraryViewProps {
   cards: WordCard[];
@@ -71,8 +76,23 @@ export function LibraryView({
   const [editUz, setEditUz] = useState('');
   const [editDeck, setEditDeck] = useState('');
 
-  // AI Audit state
+  // AI Audit & Cloud Backups state
   const [aiAuditing, setAiAuditing] = useState(false);
+  const [backupsOpen, setBackupsOpen] = useState(false);
+  const [cloudBackups, setCloudBackups] = useState<CloudBackupEntry[]>([]);
+  const [backupsLoading, setBackupsLoading] = useState(false);
+
+  const handleOpenBackups = async () => {
+    if (backupsOpen) {
+      setBackupsOpen(false);
+      return;
+    }
+    setBackupsOpen(true);
+    setBackupsLoading(true);
+    const list = await listCloudBackups(getSyncId());
+    setCloudBackups(list);
+    setBackupsLoading(false);
+  };
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -191,6 +211,14 @@ export function LibraryView({
           <button
             type="button"
             className="btn-ghost"
+            onClick={() => void handleOpenBackups()}
+          >
+            <RotateCcw size={15} aria-hidden="true" />
+            Zaxiralar
+          </button>
+          <button
+            type="button"
+            className="btn-ghost"
             onClick={() => exportBackupJson(cards, stats)}
             disabled={cards.length === 0}
           >
@@ -218,6 +246,48 @@ export function LibraryView({
       {importMsg && (
         <div className="notice-banner" role="status">
           {importMsg}
+        </div>
+      )}
+
+      {backupsOpen && (
+        <div className="wc-card" style={{ marginBottom: 16, padding: 16 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>
+            Avtomatik kunlik Firebase zaxiralari
+          </div>
+          {backupsLoading ? (
+            <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+              Zaxiralar yuklanmoqda...
+            </p>
+          ) : cloudBackups.length === 0 ? (
+            <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+              Hali kunlik zaxira yaratilmagan (yangi so‘z qo‘shilishi bilan avtomatik yaratiladi).
+            </p>
+          ) : (
+            <div className="word-list">
+              {cloudBackups.map((b) => (
+                <div key={b.dateKey} className="word-row-card" style={{ padding: '10px 12px' }}>
+                  <div>
+                    <strong className="mono">{b.dateKey}</strong>
+                    <span style={{ fontSize: 13, color: 'var(--text-muted)', marginLeft: 10 }}>
+                      {b.count} ta so‘z
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn-green"
+                    style={{ minHeight: 34, padding: '4px 12px', fontSize: 12 }}
+                    onClick={() => {
+                      onImportCards(b.cards);
+                      setImportMsg(`${b.dateKey} sanasidagi ${b.count} ta so‘z tiklandi!`);
+                      setBackupsOpen(false);
+                    }}
+                  >
+                    Tiklash
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

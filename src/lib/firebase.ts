@@ -287,6 +287,21 @@ export function subscribeToCloudSync(
   };
 }
 
+export interface CloudBackupEntry {
+  dateKey: string;
+  count: number;
+  updatedAt: number;
+  cards: WordCard[];
+}
+
+function getTodayDateKey(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(
+    2,
+    '0'
+  )}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 export async function pushToCloud(
   syncId: string,
   cards: WordCard[],
@@ -296,12 +311,18 @@ export async function pushToCloud(
   const cfg = getActiveFirebaseConfig();
   if (!cfg) return false;
 
+  // Ironclad guard: NEVER overwrite cloud with an empty array unless explicit deletions happened
+  if (cards.length === 0 && deletedIds.length === 0) {
+    return false;
+  }
+
   const safeId = encodeURIComponent(syncId || 'asosiy');
+  const now = Date.now();
   const payloadObj: CloudPayload = {
     cards,
     deletedIds: Array.from(new Set(deletedIds)).slice(-500),
     stats,
-    updatedAt: Date.now(),
+    updatedAt: now,
   };
 
   activePushCount++;
@@ -314,6 +335,26 @@ export async function pushToCloud(
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payloadObj),
         });
+
+        // Also save an automatic daily snapshot backup in Firebase RTDB when cards > 0
+        if (res.ok && cards.length > 0) {
+          const todayKey = getTodayDateKey();
+          const backupObj: CloudBackupEntry = {
+            dateKey: todayKey,
+            count: cards.length,
+            updatedAt: now,
+            cards,
+          };
+          void fetch(
+            `${base}/eslabqol_backups/${safeId}/${todayKey}.json`,
+            {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(backupObj),
+            }
+          ).catch(() => {});
+        }
+
         if (res.ok) return true;
       } catch {
         // fall through to Firestore REST
@@ -341,5 +382,30 @@ export async function pushToCloud(
     return false;
   } finally {
     activePushCount = Math.max(0, activePushCount - 1);
+  }
+}
+
+/**
+ * Fetches available daily cloud backups from Firebase RTDB.
+ */
+export async function listCloudBackups(
+  syncId: string
+): Promise<CloudBackupEntry[]> {
+  const cfg = getActiveFirebaseConfig();
+  if (!cfg?.databaseURL) return [];
+  const safeId = encodeURIComponent(syncId || 'asosiy');
+  const base = cfg.databaseURL.replace(/\/$/, '');
+  try {
+    const res = await fetch(`${base}/eslabqol_backups/${safeId}.json`, {
+      cache: 'no-store',
+    });
+    if (!res.ok) return [];
+    const data = (await res.json()) as Record<string, CloudBackupEntry> | null;
+    if (!data) return [];
+    return Object.values(data)
+      .filter((b) => b && Array.isArray(b.cards))
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+  } catch {
+    return [];
   }
 }
