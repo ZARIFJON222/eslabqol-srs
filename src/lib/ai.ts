@@ -106,12 +106,14 @@ export async function auditWordsWithAi(
     uz: w.uz,
   }));
 
-  const prompt = `You are a strict English-Uzbek dictionary editor.
-Inspect this JSON array of vocabulary items. For each item:
-1. Convert English words to lowercase unless it is a proper noun (like "Monday", "English"). Fix any English spelling typos.
-2. Convert Uzbek translations to lowercase (unless proper noun), normalize Uzbek Latin apostrophes (use o‘ and g‘ and ’), and fix Uzbek spelling typos.
-3. Keep the meaning accurate and concise.
-4. Return ONLY a JSON array of objects with keys: "id", "en", "uz", "reason" (short Uzbek note if changed, or empty string if unchanged).
+  const prompt = `You are a strict formatting and spelling proofreader ONLY.
+Inspect this JSON array of English-Uzbek vocabulary items.
+CRITICAL RULES:
+1. NEVER change, rephrase, translate, shorten, or replace the meaning of any Uzbek or English word! Keep the exact words the user wrote.
+2. ONLY fix capitalization: convert uppercase/capitalized words to lowercase unless it is a proper noun (e.g. "Abandon" -> "abandon", "Bolta" -> "bolta").
+3. ONLY fix obvious spelling typos (e.g. "compansate" -> "compensate", "yahshi" -> "yaxshi", "togri" -> "to‘g‘ri") and standardize Uzbek Latin apostrophes (o' -> o‘, g' -> g‘, ' -> ’).
+4. If a word/translation is already spelled fine, return it 100% IDENTICAL (just lowercased if needed).
+5. Return ONLY a JSON array of objects with keys: "id", "en", "uz", "reason" (empty string if unchanged).
 
 Input:
 ${JSON.stringify(compact)}`;
