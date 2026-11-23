@@ -282,17 +282,18 @@ export function App() {
     setCards((prev) => {
       if (newCards.length === 0) return prev;
       const targetDeck = newCards[0].deck;
-      const existingInDeck = prev.find((c) => c.deck === targetDeck);
+      // Strict per-unit timer: only cards of the SAME unit share a timer; different units never stretch each other's time!
+      const existingInSameUnit = prev.find((c) => c.deck === targetDeck);
       const now = Date.now();
-      const deckStage = existingInDeck ? existingInDeck.stage : 0;
-      const deckNextReview = existingInDeck
-        ? existingInDeck.nextReviewAt
-        : now + 1 * 3600 * 1000; // 1 soatlik level timer starts
+      const unitStage = existingInSameUnit ? existingInSameUnit.stage : 0;
+      const unitStrictDue = existingInSameUnit
+        ? existingInSameUnit.nextReviewAt
+        : now + 1 * 3600 * 1000; // Strictly 1 hour for Stage 0 (1 soatlik time frame)
 
       const syncedNew = newCards.map((c) => ({
         ...c,
-        stage: deckStage,
-        nextReviewAt: deckNextReview,
+        stage: unitStage,
+        nextReviewAt: unitStrictDue,
       }));
       return [...syncedNew, ...prev];
     });

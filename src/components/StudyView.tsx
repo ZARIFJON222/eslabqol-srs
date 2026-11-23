@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   ArrowLeft,
   ArrowRight,
   BookOpen,
@@ -7,6 +8,7 @@ import {
   Clock,
   FolderPlus,
   Headphones,
+  Lock,
   Play,
   Sparkles,
   Square,
@@ -44,9 +46,13 @@ interface UnitCardGroup {
   stage: number;
   levelLabel: string;
   nextLevelLabel: string;
+  intervalMs: number;
   cards: WordCard[];
-  dueAtMs: number;
+  dueAtMs: number; // Strict time when this unit becomes ready
+  lockAtMs: number; // Strict deadline: if ignored past (dueAtMs + intervalMs), it locks all other time frames!
   isReady: boolean;
+  isLockingOthers: boolean; // True when overdue past lockAtMs (e.g. 7-day unit ignored for 2 weeks)
+  overdueDurationMs: number;
 }
 
 export function StudyView({
@@ -75,15 +81,18 @@ export function StudyView({
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null);
   const [questionNonce, setQuestionNonce] = useState(0);
 
-  // Live 1-second ticker for reverse countdowns
+  // Live 1-second ticker for strict reverse countdowns & lock timers
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, []);
 
   /**
-   * Groups words by Unit (`deck`). Each Unit lives as ONE card inside its current level
-   * (`1 soat`, `2 soat`, `5 soat`, `1 kun`, `3 kun`, `7 kun`, `14 kun`, `1 oy`).
+   * Groups words by Unit (`deck`).
+   * - Each Unit has its own strict timer (`dueAtMs`) and strict lock deadline (`lockAtMs = dueAtMs + intervalMs`).
+   * - Units move from Time Frame to Time Frame like train cars (catching up if an earlier frame is empty or waiting).
+   * - If a Unit is neglected past `lockAtMs` (e.g., a 7-day unit sits untouched for 2 weeks),
+   *   `isLockingOthers` becomes true and blocks all other Time Frames until completed!
    */
   const unitCards = useMemo<UnitCardGroup[]>(() => {
     const map = new Map<string, WordCard[]>();
@@ -95,26 +104,39 @@ export function StudyView({
 
     const groups: UnitCardGroup[] = [];
     for (const [unitName, unitWords] of map.entries()) {
-      // A unit's level is the stage of its words
       const stage = clampStage(unitWords[0].stage);
       const spec = getStageSpec(stage);
       const nextSpec = getStageSpec(clampStage(stage + 1));
-      const dueAtMs = Math.max(...unitWords.map((w) => w.nextReviewAt));
-      const isReady = dueAtMs <= now;
+
+      // Strict due timestamp for this unit
+      const dueAtMs = Math.min(...unitWords.map((w) => w.nextReviewAt));
+      // Strict discipline lock deadline: if due and neglected for another full interval
+      // (e.g. 7-day unit not done after 14 days / 2 weeks total, or 1-hour unit not done after 2 hours total)
+      const lockAtMs = dueAtMs + spec.intervalMs;
+      const isReady = now >= dueAtMs;
+      const isLockingOthers = now >= lockAtMs;
+      const overdueDurationMs = Math.max(0, now - dueAtMs);
 
       groups.push({
         unitName,
         stage,
         levelLabel: spec.label,
         nextLevelLabel: nextSpec.label,
+        intervalMs: spec.intervalMs,
         cards: unitWords,
         dueAtMs,
+        lockAtMs,
         isReady,
+        isLockingOthers,
+        overdueDurationMs,
       });
     }
 
-    // Ready units first, then by soonest due time
+    // Sort: Locking/Overdue units first, then Ready units, then by soonest countdown
     groups.sort((a, b) => {
+      if (a.isLockingOthers !== b.isLockingOthers) {
+        return a.isLockingOthers ? -1 : 1;
+      }
       if (a.isReady !== b.isReady) return a.isReady ? -1 : 1;
       return a.dueAtMs - b.dueAtMs;
     });
@@ -122,15 +144,27 @@ export function StudyView({
     return groups;
   }, [cards, now]);
 
-  // Count how many Unit Cards are in each of the 8 levels
+  // Find if any unit is currently neglected past its lock deadline
+  const blockingUnits = useMemo(
+    () => unitCards.filter((u) => u.isLockingOthers),
+    [unitCards]
+  );
+
+  const primaryBlocker = blockingUnits[0] ?? null;
+
+  // Count how many Unit Cards are in each of the 8 Time Frames
   const levelStats = useMemo(() => {
     return SRS_STAGES.map((spec) => {
       const unitsInLevel = unitCards.filter((u) => u.stage === spec.stage);
       const readyInLevel = unitsInLevel.filter((u) => u.isReady).length;
+      const lockingInLevel = unitsInLevel.filter(
+        (u) => u.isLockingOthers
+      ).length;
       return {
         ...spec,
         unitCount: unitsInLevel.length,
         readyCount: readyInLevel,
+        lockingCount: lockingInLevel,
       };
     });
   }, [unitCards]);
@@ -175,6 +209,11 @@ export function StudyView({
 
   const startUnitQuiz = (unit: UnitCardGroup) => {
     if (unit.cards.length === 0) return;
+    // Enforce discipline lock: if another unit is blocking, only allow starting blocking units!
+    if (primaryBlocker && !unit.isLockingOthers) {
+      setSelectedLevel(primaryBlocker.stage);
+      return;
+    }
     stopAutoPlay();
     const ids = unit.cards.map((c) => c.id);
     setQueueIds(ids);
@@ -251,15 +290,12 @@ export function StudyView({
 
     const rest = queueIds.slice(1);
     if (wasWrong) {
-      // Re-insert wrong word 2 spots later so user masters the entire Unit before leveling up!
       const insertIdx = Math.min(2, rest.length);
       rest.splice(insertIdx, 0, currentCard.id);
     }
 
     if (rest.length === 0) {
-      // Entire Unit completed! Move this Unit Card to the next Level!
       onCompleteUnitLevel(activeQuizUnit.unitName, activeQuizUnit.stage);
-      // Automatically switch the level filter if user was filtering on the old level
       if (selectedLevel !== 'all') {
         setSelectedLevel(Math.min(activeQuizUnit.stage + 1, 7));
       }
@@ -339,16 +375,16 @@ export function StudyView({
             <CheckCircle2 size={28} />
           </div>
           <h1 className="empty-title">
-            “{activeQuizUnit.unitName}” keyingi levelga o‘tdi!
+            “{activeQuizUnit.unitName}” → {nextLvl.label} bo‘limiga o‘tdi!
           </h1>
           <p className="empty-desc">
-            <strong>{activeQuizUnit.levelLabel}</strong> bosqichi yakunlandi va
-            unit <strong>{nextLvl.label}</strong> bo‘limiga ko‘chirildi.
+            Endi bu unit uchun qat’iy <strong>{nextLvl.label}lik</strong>{' '}
+            teskari sanoq taymeri boshlandi.
           </p>
           <div className="empty-actions">
             <button type="button" className="btn-green" onClick={exitQuiz}>
               <ArrowLeft size={16} aria-hidden="true" />
-              Bo‘limlarga qaytish
+              Time frame’larga qaytish
             </button>
           </div>
         </section>
@@ -485,7 +521,8 @@ export function StudyView({
                     </span>
 
                     <span className="box-move-badge mono">
-                      {activeQuizUnit.levelLabel} → {activeQuizUnit.nextLevelLabel}
+                      {activeQuizUnit.levelLabel} →{' '}
+                      {activeQuizUnit.nextLevelLabel}
                     </span>
                   </div>
 
@@ -510,15 +547,15 @@ export function StudyView({
     );
   }
 
-  // 3. Main Screen: Center 8-Level Strip (1 soat, 2 soat, 5 soat, 1 kun, 3 kun, 7 kun, 14 kun, 1 oy) + Unit Cards!
+  // 3. Main Mashq Screen: 8 Time Frames + Train Catch-Up + Overdue Discipline Lock!
   return (
     <section aria-label="Mashq">
-      {/* Top Row: 8-Level Horizontal Bar in Center + Road Reader Toggle */}
+      {/* Top Row: 8 Time Frames in Center + Road Reader Toggle */}
       <div className="level-bar-wrap">
         <div
           className="srs-strip level-strip-center"
           role="group"
-          aria-label="Takrorlash vaqt bo‘limlari"
+          aria-label="Time frame bo‘limlari"
         >
           <button
             type="button"
@@ -535,7 +572,13 @@ export function StudyView({
               type="button"
               className={`srs-pill ${
                 selectedLevel === lvl.stage ? 'is-active' : ''
-              } ${lvl.readyCount > 0 ? 'has-ready-unit' : ''}`}
+              } ${
+                lvl.lockingCount > 0
+                  ? 'has-locking-unit'
+                  : lvl.readyCount > 0
+                  ? 'has-ready-unit'
+                  : ''
+              }`}
               onClick={() => setSelectedLevel(lvl.stage)}
             >
               <span>{lvl.label}</span>
@@ -554,9 +597,38 @@ export function StudyView({
           }}
         >
           <BookOpen size={15} aria-hidden="true" />
-          <span>{roadReaderOpen ? 'Unitlar' : 'Yo‘lda o‘qish'}</span>
+          <span>{roadReaderOpen ? 'Time frame' : 'Yo‘lda o‘qish'}</span>
         </button>
       </div>
+
+      {/* Discipline Lock Alert Banner if a Time Frame has been neglected past its deadline! */}
+      {primaryBlocker && !roadReaderOpen && (
+        <div className="discipline-lock-banner" role="alert">
+          <div className="discipline-lock-top">
+            <AlertTriangle size={20} aria-hidden="true" />
+            <strong>
+              Hoy, “{primaryBlocker.levelLabel}” time frame’ni qilmayapsiz!
+            </strong>
+          </div>
+          <p className="discipline-lock-desc">
+            <strong>{primaryBlocker.unitName}</strong> uniti{' '}
+            <strong>{primaryBlocker.levelLabel}</strong> bo‘limida qimirlamay
+            turganiga belgilangan muddatdan oshib ketdi. Qolgan time frame’lar
+            vaqtincha <strong>bloklandi</strong> — avval shuni tugating, keyin
+            qolganlari ochiladi!
+          </p>
+          <button
+            type="button"
+            className="btn-green"
+            style={{ minHeight: 44 }}
+            onClick={() => startUnitQuiz(primaryBlocker)}
+          >
+            <Play size={16} aria-hidden="true" />
+            “{primaryBlocker.unitName}” ({primaryBlocker.levelLabel}) ni hozir
+            tugatish
+          </button>
+        </div>
+      )}
 
       {roadReaderOpen ? (
         <div
@@ -649,22 +721,40 @@ export function StudyView({
           style={{ maxWidth: 560, marginInline: 'auto', marginTop: 10 }}
         >
           <p className="empty-desc">
-            Hozircha <strong>{selectedLevel !== 'all' ? getStageSpec(selectedLevel).label : ''}</strong> bo‘limida unit yo‘q. Oldingi leveldagi unitlarni qaytarganingizdan keyin bu yerga avtomatik o‘tadi.
+            Hozircha{' '}
+            <strong>
+              {selectedLevel !== 'all' ? getStageSpec(selectedLevel).label : ''}
+            </strong>{' '}
+            time frame bo‘sh. Orqadagi unitlarni qaytarganingizda poyezd bo‘lib
+            shu yerga yetib keladi.
           </p>
         </div>
       ) : (
         <div className="center-tasks-feed">
           {visibleUnits.map((unit) => {
             const isExpanded = expandedUnit === unit.unitName;
+            // A unit is locked ONLY if another unit has triggered the overdue discipline lock
+            const isBlockedByOther =
+              Boolean(primaryBlocker) && !unit.isLockingOthers;
+
             return (
               <div
                 key={unit.unitName}
                 className={`popup-task-card ${
-                  unit.isReady ? 'is-ready' : 'is-waiting'
-                }`}
+                  unit.isLockingOthers
+                    ? 'is-locking'
+                    : unit.isReady
+                    ? 'is-ready'
+                    : 'is-waiting'
+                } ${isBlockedByOther ? 'is-blocked-card' : ''}`}
               >
                 <div className="popup-task-top">
-                  {unit.isReady ? (
+                  {unit.isLockingOthers ? (
+                    <span className="popup-danger-pill">
+                      <AlertTriangle size={14} aria-hidden="true" />
+                      {unit.levelLabel} · Qimirlamayapti (Majburiy!)
+                    </span>
+                  ) : unit.isReady ? (
                     <span className="popup-ready-pill">
                       <span className="pulse-dot" aria-hidden="true" />
                       {unit.levelLabel} · Vaqti keldi!
@@ -672,29 +762,47 @@ export function StudyView({
                   ) : (
                     <span className="popup-wait-pill">
                       <Clock size={14} aria-hidden="true" />
-                      <span>Level: {unit.levelLabel}</span>
+                      <span>Time frame: {unit.levelLabel}</span>
                     </span>
                   )}
 
-                  {unit.isReady ? (
-                    <span className="leitner-count-pill mono">
-                      {unit.cards.length} ta so‘z
+                  {unit.isLockingOthers ? (
+                    <span className="countdown-badge is-danger-timer mono">
+                      Kechikdi: +{formatCountdownUz(now + unit.overdueDurationMs, now)}
+                    </span>
+                  ) : unit.isReady ? (
+                    <span
+                      className="countdown-badge is-warn-timer mono"
+                      title="Shu vaqt ichida qilinmasa qolgan bo‘limlar bloklanadi"
+                    >
+                      Blokgacha: {formatCountdownUz(unit.lockAtMs, now)}
                     </span>
                   ) : (
                     <span className="countdown-badge mono">
-                      {formatCountdownUz(unit.dueAtMs, now)}
+                      Qoldi: {formatCountdownUz(unit.dueAtMs, now)}
                     </span>
                   )}
                 </div>
 
                 <h2 className="popup-unit-title">{unit.unitName}</h2>
                 <p className="popup-unit-sub">
-                  {unit.cards.length} ta so‘z · Qaytarganingizdan keyin{' '}
-                  <strong>{unit.nextLevelLabel}</strong> bo‘limiga o‘tadi
+                  {unit.cards.length} ta so‘z · Tugatgach{' '}
+                  <strong>{unit.nextLevelLabel}</strong> time frame’ga poyezd
+                  bo‘lib qo‘shiladi
                 </p>
 
                 <div className="popup-task-actions">
-                  {unit.isReady ? (
+                  {isBlockedByOther ? (
+                    <button
+                      type="button"
+                      className="btn-ghost"
+                      disabled
+                      style={{ flex: 1, minHeight: 46, opacity: 0.65 }}
+                    >
+                      <Lock size={15} aria-hidden="true" />
+                      Bloklangan (Avval “{primaryBlocker?.unitName}”ni tugating)
+                    </button>
+                  ) : unit.isReady ? (
                     <button
                       type="button"
                       className="btn-green"
@@ -702,7 +810,7 @@ export function StudyView({
                       onClick={() => startUnitQuiz(unit)}
                     >
                       <Play size={17} aria-hidden="true" />
-                      Qaytarishni boshlash ({unit.cards.length})
+                      {unit.levelLabel}likni boshlash ({unit.cards.length})
                     </button>
                   ) : (
                     <button
@@ -712,7 +820,8 @@ export function StudyView({
                       onClick={() => startUnitQuiz(unit)}
                     >
                       <Play size={15} aria-hidden="true" />
-                      Hozir qaytarish ({unit.levelLabel} → {unit.nextLevelLabel})
+                      Kutmasdan hozir tugatish ({unit.levelLabel} →{' '}
+                      {unit.nextLevelLabel})
                     </button>
                   )}
 
