@@ -83,6 +83,7 @@ export function App() {
   const [configVersion, setConfigVersion] = useState(0);
 
   const isApplyingRemoteRef = useRef(false);
+  const hasMountedRef = useRef(false);
   const cardsRef = useRef(cards);
   cardsRef.current = cards;
   const deletedIdsRef = useRef(deletedIds);
@@ -103,6 +104,11 @@ export function App() {
   useEffect(() => {
     saveCards(cards);
     saveDeletedIds(deletedIds);
+    // Never overwrite cloud on initial page load / refresh!
+    if (!hasMountedRef.current) {
+      hasMountedRef.current = true;
+      return;
+    }
     if (isApplyingRemoteRef.current) {
       isApplyingRemoteRef.current = false;
       return;
