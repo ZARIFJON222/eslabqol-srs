@@ -31,9 +31,11 @@ import {
 import {
   getActiveFirebaseConfig,
   getSyncId,
+  loadDeletedIds,
   mergeCardLists,
   parseFirebaseConfigInput,
   pushToCloud,
+  saveDeletedIds,
   saveFirebaseConfig,
   setSyncId,
   subscribeToCloudSync,
@@ -58,6 +60,7 @@ export function App() {
   const [cloudOpen, setCloudOpen] = useState(false);
 
   const [cards, setCards] = useState<WordCard[]>(() => loadCards());
+  const [deletedIds, setDeletedIds] = useState<string[]>(() => loadDeletedIds());
   const [stats, setStats] = useState<DailyStats>(() => loadStats());
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [studyDeckOverride, setStudyDeckOverride] = useState<string>('all');
@@ -80,6 +83,8 @@ export function App() {
   const isApplyingRemoteRef = useRef(false);
   const cardsRef = useRef(cards);
   cardsRef.current = cards;
+  const deletedIdsRef = useRef(deletedIds);
+  deletedIdsRef.current = deletedIds;
   const statsRef = useRef(stats);
   statsRef.current = stats;
 
@@ -95,28 +100,53 @@ export function App() {
 
   useEffect(() => {
     saveCards(cards);
+    saveDeletedIds(deletedIds);
     if (isApplyingRemoteRef.current) {
       isApplyingRemoteRef.current = false;
       return;
     }
     if (getActiveFirebaseConfig()) {
-      void pushToCloud(syncId, cards, statsRef.current);
+      void pushToCloud(syncId, cards, statsRef.current, deletedIds);
     }
-  }, [cards, syncId]);
+  }, [cards, deletedIds, syncId]);
 
   useEffect(() => {
     const unsub = subscribeToCloudSync(
       syncId,
-      (remoteCards) => {
-        // If cloud is empty but we already have local words, push local words to cloud
-        if (remoteCards.length === 0 && cardsRef.current.length > 0) {
-          void pushToCloud(syncId, cardsRef.current, statsRef.current);
+      (remoteCards, remoteDeletedIds) => {
+        const combinedDeleted = Array.from(
+          new Set([...deletedIdsRef.current, ...remoteDeletedIds])
+        );
+
+        if (
+          remoteCards.length === 0 &&
+          remoteDeletedIds.length === 0 &&
+          cardsRef.current.length > 0
+        ) {
+          void pushToCloud(
+            syncId,
+            cardsRef.current,
+            statsRef.current,
+            combinedDeleted
+          );
           return;
         }
-        const merged = mergeCardLists(cardsRef.current, remoteCards);
-        if (JSON.stringify(merged) !== JSON.stringify(cardsRef.current)) {
+
+        const merged = mergeCardLists(
+          cardsRef.current,
+          remoteCards,
+          combinedDeleted
+        );
+
+        const cardsChanged =
+          JSON.stringify(merged) !== JSON.stringify(cardsRef.current);
+        const deletedChanged =
+          combinedDeleted.length !== deletedIdsRef.current.length;
+
+        if (cardsChanged || deletedChanged) {
           isApplyingRemoteRef.current = true;
-          setCards(merged);
+          if (deletedChanged) setDeletedIds(combinedDeleted);
+          if (cardsChanged) setCards(merged);
         }
       },
       (status) => setCloudStatus(status)
@@ -171,7 +201,7 @@ export function App() {
     setSyncIdInput(clean);
     setFbNotice(`Sinxronizatsiya kodi “${clean}” ga o‘zgartirildi.`);
     if (getActiveFirebaseConfig() && cards.length > 0) {
-      void pushToCloud(clean, cards, stats);
+      void pushToCloud(clean, cards, stats, deletedIds);
     }
   };
 
@@ -190,7 +220,7 @@ export function App() {
     setConfigVersion((v) => v + 1);
     setFbNotice(`Firebase (${parsed.projectId}) muvaffaqiyatli ulandi!`);
     if (cards.length > 0) {
-      void pushToCloud(syncId, cards, stats);
+      void pushToCloud(syncId, cards, stats, deletedIds);
     }
   };
 
@@ -256,6 +286,7 @@ export function App() {
   };
 
   const handleDeleteCard = (id: string) => {
+    setDeletedIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
     setCards((prev) => prev.filter((c) => c.id !== id));
   };
 

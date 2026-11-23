@@ -12,6 +12,7 @@ export interface FirebaseConfigData {
 
 const FB_CONFIG_KEY = 'eslabqol_firebase_config_v1';
 const FB_SYNC_ID_KEY = 'eslabqol_sync_id_v1';
+const DELETED_IDS_KEY = 'eslabqol_deleted_ids_v1';
 
 const DEFAULT_KARTA_FIREBASE_CONFIG: FirebaseConfigData = {
   apiKey: 'AIzaSyCNH5U1C_JNy3oaAVXs71g8IKxeF_koR5k',
@@ -22,6 +23,27 @@ const DEFAULT_KARTA_FIREBASE_CONFIG: FirebaseConfigData = {
   messagingSenderId: '195654108406',
   appId: '1:195654108406:web:86443492750129ff2898d7',
 };
+
+export function loadDeletedIds(): string[] {
+  try {
+    const raw = localStorage.getItem(DELETED_IDS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as string[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveDeletedIds(ids: string[]): void {
+  try {
+    // Keep last 500 tombstones
+    const trimmed = Array.from(new Set(ids)).slice(-500);
+    localStorage.setItem(DELETED_IDS_KEY, JSON.stringify(trimmed));
+  } catch {
+    // ignore
+  }
+}
 
 export function getSyncId(): string {
   try {
@@ -80,10 +102,6 @@ export function getActiveFirebaseConfig(): FirebaseConfigData | null {
   return DEFAULT_KARTA_FIREBASE_CONFIG;
 }
 
-/**
- * Parses either JSON or a raw JS snippet copied directly from Firebase Console
- * (e.g. `const firebaseConfig = { apiKey: "...", projectId: "..." };`)
- */
 export function parseFirebaseConfigInput(
   input: string
 ): FirebaseConfigData | null {
@@ -122,17 +140,24 @@ export function saveFirebaseConfig(config: FirebaseConfigData | null): void {
 }
 
 /**
- * Merges local and cloud cards without losing new words or recent reviews.
+ * Merges local and cloud cards while respecting deletedIds tombstones
+ * so deleted words NEVER resurrect across devices or accounts.
  */
 export function mergeCardLists(
   local: WordCard[],
-  remote: WordCard[]
+  remote: WordCard[],
+  deletedIds: string[] = []
 ): WordCard[] {
+  const deletedSet = new Set(deletedIds);
   const map = new Map<string, WordCard>();
+
   for (const c of local) {
-    map.set(c.id, c);
+    if (!deletedSet.has(c.id)) {
+      map.set(c.id, c);
+    }
   }
   for (const r of remote) {
+    if (deletedSet.has(r.id)) continue;
     const existing = map.get(r.id);
     if (!existing) {
       map.set(r.id, r);
@@ -147,10 +172,18 @@ export function mergeCardLists(
   return Array.from(map.values()).sort((a, b) => b.createdAt - a.createdAt);
 }
 
-interface CloudPayload {
+export interface CloudPayload {
   cards?: WordCard[];
+  deletedIds?: string[];
   stats?: DailyStats;
   updatedAt?: number;
+}
+
+// Track in-flight push count so periodic pulls never overwrite an active delete/add
+let activePushCount = 0;
+
+export function isPushInFlight(): boolean {
+  return activePushCount > 0;
 }
 
 async function fetchFromCloud(
@@ -159,34 +192,35 @@ async function fetchFromCloud(
 ): Promise<CloudPayload | null> {
   const safeId = encodeURIComponent(syncId || 'asosiy');
 
-  // 1. If Realtime Database URL is provided, use RTDB directly
   if (cfg.databaseURL) {
     const base = cfg.databaseURL.replace(/\/$/, '');
-    const res = await fetch(`${base}/eslabqol_workspaces/${safeId}.json`);
+    const res = await fetch(`${base}/eslabqol_workspaces/${safeId}.json`, {
+      cache: 'no-store',
+    });
     if (!res.ok) {
       throw new Error(`RTDB HTTP ${res.status}`);
     }
     const data = (await res.json()) as CloudPayload | null;
     if (!data) {
-      return { cards: [] };
+      return { cards: [], deletedIds: [] };
     }
     return {
       cards: Array.isArray(data.cards) ? data.cards : [],
+      deletedIds: Array.isArray(data.deletedIds) ? data.deletedIds : [],
       stats: data.stats,
       updatedAt: data.updatedAt,
     };
   }
 
-  // 2. Cloud Firestore REST API
   const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
     cfg.projectId
   )}/databases/(default)/documents/eslabqol_workspaces/${safeId}?key=${encodeURIComponent(
     cfg.apiKey
   )}`;
 
-  const res = await fetch(url);
+  const res = await fetch(url, { cache: 'no-store' });
   if (res.status === 404) {
-    return { cards: [] };
+    return { cards: [], deletedIds: [] };
   }
   if (!res.ok) {
     throw new Error(`Firestore HTTP ${res.status}`);
@@ -195,16 +229,17 @@ async function fetchFromCloud(
     fields?: { payload?: { stringValue?: string } };
   };
   const rawPayload = docJson?.fields?.payload?.stringValue;
-  if (!rawPayload) return { cards: [] };
+  if (!rawPayload) return { cards: [], deletedIds: [] };
   return JSON.parse(rawPayload) as CloudPayload;
 }
 
-/**
- * Subscribes to Firebase Cloud updates (on mount, tab focus, visibilitychange, and 10s interval).
- */
 export function subscribeToCloudSync(
   syncId: string,
-  onRemoteData: (cards: WordCard[], stats?: DailyStats) => void,
+  onRemoteData: (
+    cards: WordCard[],
+    deletedIds: string[],
+    stats?: DailyStats
+  ) => void,
   onStatusChange: (status: 'off' | 'connecting' | 'connected' | 'error') => void
 ): (() => void) | null {
   const cfg = getActiveFirebaseConfig();
@@ -217,13 +252,17 @@ export function subscribeToCloudSync(
   onStatusChange('connecting');
 
   const pull = async () => {
-    if (!active) return;
+    if (!active || isPushInFlight()) return;
     try {
       const data = await fetchFromCloud(cfg, syncId);
-      if (!active) return;
+      if (!active || isPushInFlight()) return;
       onStatusChange('connected');
-      if (data && Array.isArray(data.cards)) {
-        onRemoteData(data.cards, data.stats);
+      if (data) {
+        onRemoteData(
+          Array.isArray(data.cards) ? data.cards : [],
+          Array.isArray(data.deletedIds) ? data.deletedIds : [],
+          data.stats
+        );
       }
     } catch {
       if (active) onStatusChange('error');
@@ -231,7 +270,7 @@ export function subscribeToCloudSync(
   };
 
   void pull();
-  const intervalId = window.setInterval(() => void pull(), 10000);
+  const intervalId = window.setInterval(() => void pull(), 4000);
   const onFocus = () => void pull();
   const onVis = () => {
     if (document.visibilityState === 'visible') void pull();
@@ -248,13 +287,11 @@ export function subscribeToCloudSync(
   };
 }
 
-/**
- * Pushes updated cards and stats to Firebase (Realtime DB or Cloud Firestore).
- */
 export async function pushToCloud(
   syncId: string,
   cards: WordCard[],
-  stats: DailyStats
+  stats: DailyStats,
+  deletedIds: string[] = []
 ): Promise<boolean> {
   const cfg = getActiveFirebaseConfig();
   if (!cfg) return false;
@@ -262,27 +299,27 @@ export async function pushToCloud(
   const safeId = encodeURIComponent(syncId || 'asosiy');
   const payloadObj: CloudPayload = {
     cards,
+    deletedIds: Array.from(new Set(deletedIds)).slice(-500),
     stats,
     updatedAt: Date.now(),
   };
 
-  // 1. If Realtime Database URL is configured
-  if (cfg.databaseURL) {
-    try {
-      const base = cfg.databaseURL.replace(/\/$/, '');
-      const res = await fetch(`${base}/eslabqol_workspaces/${safeId}.json`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payloadObj),
-      });
-      if (res.ok) return true;
-    } catch {
-      // fall through to Firestore REST
-    }
-  }
-
-  // 2. Cloud Firestore REST API
+  activePushCount++;
   try {
+    if (cfg.databaseURL) {
+      try {
+        const base = cfg.databaseURL.replace(/\/$/, '');
+        const res = await fetch(`${base}/eslabqol_workspaces/${safeId}.json`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payloadObj),
+        });
+        if (res.ok) return true;
+      } catch {
+        // fall through to Firestore REST
+      }
+    }
+
     const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
       cfg.projectId
     )}/databases/(default)/documents/eslabqol_workspaces/${safeId}?key=${encodeURIComponent(
@@ -302,5 +339,7 @@ export async function pushToCloud(
     return res.ok;
   } catch {
     return false;
+  } finally {
+    activePushCount = Math.max(0, activePushCount - 1);
   }
 }
